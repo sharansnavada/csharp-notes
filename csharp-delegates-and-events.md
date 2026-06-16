@@ -15,9 +15,10 @@
 6. [Events — The Publisher-Subscriber Pattern](#6-events--the-publisher-subscriber-pattern)
 7. [EventHandler & Custom EventArgs](#7-eventhandler--custom-eventargs)
 8. [Delegates & Events in Unity](#8-delegates--events-in-unity)
-9. [Common Patterns & Pitfalls](#9-common-patterns--pitfalls)
-10. [Practice Exercises](#10-practice-exercises)
-11. [Quick Reference Cheat Sheet](#11-quick-reference-cheat-sheet)
+9. [Real-World Industry Examples](#9-real-world-industry-examples)
+10. [Common Patterns & Pitfalls](#10-common-patterns--pitfalls)
+11. [Practice Exercises](#11-practice-exercises)
+12. [Quick Reference Cheat Sheet](#12-quick-reference-cheat-sheet)
 
 ---
 
@@ -1258,7 +1259,817 @@ public class EnemyKillTracker : MonoBehaviour
 
 ---
 
-## 9. Common Patterns & Pitfalls
+---
+
+## 9. Real-World Industry Examples
+
+This chapter shows how the same delegate and event patterns you have just learned appear inside systems built by major companies. The code is simplified — real production systems are far more complex — but the **structure is exactly the same** as what you have learned.
+
+The key insight you will notice across every example: the publisher has **zero knowledge** of its subscribers. Each system is independent, reacts on its own, and can be added or removed without touching the publisher.
+
+---
+
+### 9.1 YouTube — Video Player & Notification System
+
+**The real problem YouTube solves:**
+A video player has many independent systems watching it — an ad manager (needs to know when to insert ads), an analytics tracker (records watch time), a recommendation engine (updates suggestions when a video ends), and an autoplay system (queues the next video). Without events, the `VideoPlayer` class would need to directly call all of these — creating a tangled mess of dependencies.
+
+With events, `VideoPlayer` just fires events. Every interested system subscribes independently.
+
+```csharp
+// ─────────────────────────────────────────────────────
+// VideoPlayer.cs — the publisher
+// ─────────────────────────────────────────────────────
+public class VideoPlayer
+{
+    public string VideoId      { get; private set; }
+    private int   _currentSecond = 0;
+    private bool  _isPlaying     = false;
+
+    // Events the player broadcasts — each is a "channel" others can tune into
+    public event Action<string> OnVideoStarted;       // (videoId) — fired when play begins
+    public event Action<int>    OnProgressUpdated;    // (currentSecond) — fired every second
+    public event Action<string> OnVideoPaused;        // (videoId) — fired on pause
+    public event Action<string> OnVideoEnded;         // (videoId) — fired when video finishes
+
+    public void Play(string videoId)
+    {
+        VideoId    = videoId;
+        _isPlaying = true;
+        OnVideoStarted?.Invoke(videoId);
+    }
+
+    public void Pause()
+    {
+        _isPlaying = false;
+        OnVideoPaused?.Invoke(VideoId);
+    }
+
+    public void TickSecond()
+    {
+        if (!_isPlaying) return;
+        _currentSecond++;
+        OnProgressUpdated?.Invoke(_currentSecond); // all subscribers get this every second
+    }
+
+    public void End()
+    {
+        _isPlaying = false;
+        OnVideoEnded?.Invoke(VideoId);
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 1 — Analytics (tracks how long you watched)
+// ─────────────────────────────────────────────────────
+public class AnalyticsTracker
+{
+    private int _watchSeconds = 0;
+
+    public AnalyticsTracker(VideoPlayer player)
+    {
+        // Subscribe to three different events on the same publisher
+        player.OnVideoStarted    += OnStart;
+        player.OnProgressUpdated += OnTick;
+        player.OnVideoEnded      += OnEnd;
+    }
+
+    private void OnStart(string videoId)
+    {
+        _watchSeconds = 0;
+        Console.WriteLine($"[Analytics] Tracking started for: {videoId}");
+    }
+
+    private void OnTick(int second) => _watchSeconds++; // silent — no output needed
+
+    private void OnEnd(string videoId)
+    {
+        Console.WriteLine($"[Analytics] Watch time: {_watchSeconds}s for video {videoId}");
+        // sends data to YouTube's servers to count watch hours
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 2 — Ad Manager (inserts ads at set timestamps)
+// ─────────────────────────────────────────────────────
+public class AdManager
+{
+    // Ad breaks happen at these timestamps (seconds into the video)
+    private HashSet<int> _adBreakSeconds = new HashSet<int> { 5, 30, 120 };
+
+    public AdManager(VideoPlayer player)
+    {
+        player.OnProgressUpdated += CheckAdBreak;
+    }
+
+    private void CheckAdBreak(int currentSecond)
+    {
+        if (_adBreakSeconds.Contains(currentSecond))
+            Console.WriteLine($"[Ads] Inserting ad at {currentSecond}s — playback paused");
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 3 — Autoplay (queues next video)
+// ─────────────────────────────────────────────────────
+public class AutoplayManager
+{
+    public AutoplayManager(VideoPlayer player)
+    {
+        player.OnVideoEnded += QueueNextVideo;
+    }
+
+    private void QueueNextVideo(string finishedVideoId)
+    {
+        Console.WriteLine($"[Autoplay] {finishedVideoId} ended — queuing next video in 5s");
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 4 — Channel Notification System
+// When a channel uploads, all its subscribers are notified
+// ─────────────────────────────────────────────────────
+public class YoutubeChannel
+{
+    public string Name { get; }
+    public event Action<string, string> OnVideoUploaded; // (channelName, videoTitle)
+
+    public YoutubeChannel(string name) => Name = name;
+
+    public void UploadVideo(string title)
+    {
+        Console.WriteLine($"[Channel] '{Name}' uploaded: "{title}"");
+        OnVideoUploaded?.Invoke(Name, title);
+    }
+}
+
+public class NotificationService
+{
+    public NotificationService(YoutubeChannel channel)
+    {
+        channel.OnVideoUploaded += SendPushNotification;
+    }
+
+    private void SendPushNotification(string channelName, string title)
+    {
+        // in reality this sends to millions of subscriber devices
+        Console.WriteLine($"[Push] New from {channelName}: \"{title}\"");
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Usage
+// ─────────────────────────────────────────────────────
+VideoPlayer      player    = new VideoPlayer();
+AnalyticsTracker analytics = new AnalyticsTracker(player);
+AdManager        ads       = new AdManager(player);
+AutoplayManager  autoplay  = new AutoplayManager(player);
+
+player.Play("dQw4w9WgXcQ");
+for (int i = 0; i < 6; i++) player.TickSecond(); // simulate 6 seconds
+player.End();
+
+// Output:
+// [Analytics] Tracking started for: dQw4w9WgXcQ
+// [Ads]       Inserting ad at 5s — playback paused
+// [Analytics] Watch time: 6s for video dQw4w9WgXcQ
+// [Autoplay]  dQw4w9WgXcQ ended — queuing next video in 5s
+
+// VideoPlayer has zero references to AdManager, AnalyticsTracker, or AutoplayManager.
+// Add a new system tomorrow — just subscribe. No changes to VideoPlayer.
+```
+
+---
+
+### 9.2 Swiggy — Order Tracking System
+
+**The real problem Swiggy solves:**
+When you place a food order, many systems need to react to each status change: the app's UI updates the order card, the notification system sends you a push, the delivery partner's app shows a pickup alert, and the payment system processes money when delivered. All of these care about order status but each does something completely different with it.
+
+```csharp
+// ─────────────────────────────────────────────────────
+// OrderStatus.cs
+// ─────────────────────────────────────────────────────
+public enum OrderStatus
+{
+    Placed,
+    AcceptedByRestaurant,
+    Preparing,
+    ReadyForPickup,
+    PickedUpByPartner,
+    OutForDelivery,
+    Delivered,
+    Cancelled
+}
+
+public class Location
+{
+    public double Latitude  { get; set; }
+    public double Longitude { get; set; }
+}
+
+// ─────────────────────────────────────────────────────
+// Order.cs — the publisher
+// ─────────────────────────────────────────────────────
+public class Order
+{
+    public string  OrderId        { get; }
+    public string  RestaurantName { get; }
+    public decimal TotalAmount    { get; }
+
+    // Events
+    public event Action<OrderStatus> OnStatusChanged;           // every status change
+    public event Action<Location>    OnDeliveryLocationUpdated; // partner's live location
+    public event Action<string>      OnOrderCancelled;          // (cancellation reason)
+
+    public Order(string orderId, string restaurant, decimal amount)
+    {
+        OrderId        = orderId;
+        RestaurantName = restaurant;
+        TotalAmount    = amount;
+    }
+
+    public void UpdateStatus(OrderStatus newStatus)
+    {
+        OnStatusChanged?.Invoke(newStatus); // broadcast to all subscribers
+
+        if (newStatus == OrderStatus.Cancelled)
+            OnOrderCancelled?.Invoke("Cancelled by restaurant");
+    }
+
+    public void UpdateDeliveryLocation(Location loc)
+    {
+        OnDeliveryLocationUpdated?.Invoke(loc);
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 1 — Customer App UI
+// ─────────────────────────────────────────────────────
+public class CustomerAppUI
+{
+    public CustomerAppUI(Order order)
+    {
+        order.OnStatusChanged           += ShowStatusCard;
+        order.OnDeliveryLocationUpdated += UpdateMapPin;
+        order.OnOrderCancelled          += ShowCancellationPopup;
+    }
+
+    private void ShowStatusCard(OrderStatus status)
+    {
+        // Convert the enum to the friendly message the customer sees
+        string message = status switch
+        {
+            OrderStatus.Placed               => "Order placed! Waiting for restaurant...",
+            OrderStatus.AcceptedByRestaurant => "Restaurant accepted your order!",
+            OrderStatus.Preparing            => "Your food is being prepared 🍳",
+            OrderStatus.ReadyForPickup       => "Order ready — finding delivery partner...",
+            OrderStatus.PickedUpByPartner    => "Partner picked up your order 🛵",
+            OrderStatus.OutForDelivery       => "Your order is on the way!",
+            OrderStatus.Delivered            => "Order delivered! Enjoy your meal 🎉",
+            _                                => "Status updated"
+        };
+        Console.WriteLine($"[Customer App] {message}");
+    }
+
+    private void UpdateMapPin(Location loc)
+    {
+        Console.WriteLine($"[Customer App] Partner at ({loc.Latitude:F4}, {loc.Longitude:F4})");
+    }
+
+    private void ShowCancellationPopup(string reason)
+    {
+        Console.WriteLine($"[Customer App] Order cancelled: {reason}. Refund in 5–7 days.");
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 2 — Push Notification Service
+// Only sends push for important milestones — not every update
+// ─────────────────────────────────────────────────────
+public class PushNotificationService
+{
+    private static readonly HashSet<OrderStatus> importantStatuses = new()
+    {
+        OrderStatus.AcceptedByRestaurant,
+        OrderStatus.PickedUpByPartner,
+        OrderStatus.Delivered,
+        OrderStatus.Cancelled
+    };
+
+    public PushNotificationService(Order order)
+    {
+        order.OnStatusChanged += MaybeSendPush;
+    }
+
+    private void MaybeSendPush(OrderStatus status)
+    {
+        if (!importantStatuses.Contains(status)) return; // skip non-critical updates
+        Console.WriteLine($"[Push Notification] 📱 Order is now: {status}");
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 3 — Delivery Partner App
+// Only cares about pickup-related statuses
+// ─────────────────────────────────────────────────────
+public class DeliveryPartnerApp
+{
+    public DeliveryPartnerApp(Order order)
+    {
+        order.OnStatusChanged += AlertPartner;
+    }
+
+    private void AlertPartner(OrderStatus status)
+    {
+        if (status == OrderStatus.ReadyForPickup)
+            Console.WriteLine("[Partner App] 🔔 New pickup! Head to the restaurant.");
+        else if (status == OrderStatus.Cancelled)
+            Console.WriteLine("[Partner App] Order cancelled — no pickup needed.");
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Usage
+// ─────────────────────────────────────────────────────
+Order order = new Order("SWG-BLR-20240312-001", "Meghana Foods", 385m);
+
+CustomerAppUI          ui      = new CustomerAppUI(order);
+PushNotificationService push   = new PushNotificationService(order);
+DeliveryPartnerApp     partner = new DeliveryPartnerApp(order);
+
+order.UpdateStatus(OrderStatus.AcceptedByRestaurant);
+order.UpdateStatus(OrderStatus.Preparing);
+order.UpdateStatus(OrderStatus.ReadyForPickup);
+order.UpdateStatus(OrderStatus.PickedUpByPartner);
+order.UpdateDeliveryLocation(new Location { Latitude = 12.9716, Longitude = 77.5946 });
+order.UpdateStatus(OrderStatus.Delivered);
+
+// [Customer App] Restaurant accepted your order!
+// [Push]         Order is now: AcceptedByRestaurant
+// [Customer App] Your food is being prepared 🍳
+// [Customer App] Order ready — finding delivery partner...
+// [Partner App]  New pickup! Head to the restaurant.
+// [Customer App] Partner picked up your order 🛵
+// [Push]         Order is now: PickedUpByPartner
+// [Customer App] Partner at (12.9716, 77.5946)
+// [Customer App] Order delivered! Enjoy your meal 🎉
+// [Push]         Order is now: Delivered
+```
+
+---
+
+### 9.3 Zerodha — Stock Price Alert System
+
+**The real problem Zerodha solves:**
+Stock prices update every millisecond during market hours. Thousands of users have set price alerts ("notify me when Infosys crosses ₹1,800"). Charts need to redraw. Portfolio values need to update. All of these subscribe to the same tick feed but each does something completely different.
+
+```csharp
+// ─────────────────────────────────────────────────────
+// TickEventArgs — the data passed with every price event
+// ─────────────────────────────────────────────────────
+public class TickEventArgs : EventArgs
+{
+    public string  Symbol        { get; }
+    public decimal LastPrice     { get; }
+    public decimal Change        { get; }         // change from previous close
+    public decimal ChangePercent { get; }
+    public long    Volume        { get; }
+
+    public TickEventArgs(string symbol, decimal price, decimal change, long volume)
+    {
+        Symbol        = symbol;
+        LastPrice     = price;
+        Change        = change;
+        ChangePercent = (price - change) != 0 ? change / (price - change) * 100 : 0;
+        Volume        = volume;
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// StockTicker.cs — the publisher
+// One instance per stock symbol on Zerodha's servers
+// ─────────────────────────────────────────────────────
+public class StockTicker
+{
+    public string Symbol { get; }
+
+    public event EventHandler<TickEventArgs> OnTick;       // every price update from exchange
+    public event EventHandler<TickEventArgs> OnPriceAlert; // when user's target price is hit
+
+    private decimal _lastPrice = 0;
+
+    // Stores alerts as (targetPrice, shouldTriggerWhenAbove)
+    private List<(decimal target, bool aboveTarget)> _alerts = new();
+
+    public StockTicker(string symbol) => Symbol = symbol;
+
+    public void AddPriceAlert(decimal targetPrice, bool triggerWhenAbove)
+    {
+        _alerts.Add((targetPrice, triggerWhenAbove));
+        string dir = triggerWhenAbove ? "above" : "below";
+        Console.WriteLine($"[Zerodha] Alert set: notify when {Symbol} goes {dir} ₹{targetPrice}");
+    }
+
+    // Called when market data arrives from the exchange
+    public void ReceiveTick(decimal newPrice, decimal change, long volume)
+    {
+        var args = new TickEventArgs(Symbol, newPrice, change, volume);
+        OnTick?.Invoke(this, args); // broadcast to charts, portfolios, etc.
+
+        // Check if any user alert is triggered
+        for (int i = 0; i < _alerts.Count; i++)
+        {
+            bool crossedUp   = _alerts[i].aboveTarget  && newPrice >= _alerts[i].target && _lastPrice < _alerts[i].target;
+            bool crossedDown = !_alerts[i].aboveTarget && newPrice <= _alerts[i].target && _lastPrice > _alerts[i].target;
+
+            if (crossedUp || crossedDown)
+                OnPriceAlert?.Invoke(this, args); // triggers once when the threshold is crossed
+        }
+
+        _lastPrice = newPrice;
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 1 — Live Chart (redraws on every tick)
+// ─────────────────────────────────────────────────────
+public class LiveChart
+{
+    public LiveChart(StockTicker ticker)
+    {
+        ticker.OnTick += Redraw;
+    }
+
+    private void Redraw(object sender, TickEventArgs e)
+    {
+        string arrow = e.Change >= 0 ? "▲" : "▼";
+        Console.WriteLine($"[Chart] {e.Symbol}: ₹{e.LastPrice:F2}  {arrow} ₹{Math.Abs(e.Change):F2}  ({e.ChangePercent:F2}%)  Vol: {e.Volume:N0}");
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 2 — Portfolio (updates P&L on every tick)
+// ─────────────────────────────────────────────────────
+public class Portfolio
+{
+    private string  _symbol;
+    private int     _quantity;
+    private decimal _avgBuyPrice;
+
+    public Portfolio(StockTicker ticker, int quantity, decimal avgBuyPrice)
+    {
+        _symbol      = ticker.Symbol;
+        _quantity    = quantity;
+        _avgBuyPrice = avgBuyPrice;
+
+        ticker.OnTick += UpdatePnL;
+    }
+
+    private void UpdatePnL(object sender, TickEventArgs e)
+    {
+        decimal currentValue = _quantity * e.LastPrice;
+        decimal profitLoss   = _quantity * (e.LastPrice - _avgBuyPrice);
+        string  sign         = profitLoss >= 0 ? "+" : "";
+        Console.WriteLine($"[Portfolio] {e.Symbol} × {_quantity} = ₹{currentValue:F0}  P&L: {sign}₹{profitLoss:F0}");
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 3 — Alert Notifier (fires only when target is crossed)
+// ─────────────────────────────────────────────────────
+public class AlertNotifier
+{
+    public AlertNotifier(StockTicker ticker)
+    {
+        ticker.OnPriceAlert += SendAlert;
+    }
+
+    private void SendAlert(object sender, TickEventArgs e)
+    {
+        Console.WriteLine($"[Alert] 🔔 {e.Symbol} hit ₹{e.LastPrice:F2} — your target was reached!");
+        // in reality: sends SMS + push notification to the user
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Usage
+// ─────────────────────────────────────────────────────
+StockTicker infy = new StockTicker("INFY");
+infy.AddPriceAlert(targetPrice: 1800m, triggerWhenAbove: true); // alert when INFY crosses ₹1,800
+
+LiveChart     chart     = new LiveChart(infy);
+Portfolio     portfolio = new Portfolio(infy, quantity: 50, avgBuyPrice: 1750m);
+AlertNotifier alerts    = new AlertNotifier(infy);
+
+// Simulate 3 price ticks arriving from NSE
+infy.ReceiveTick(newPrice: 1790m, change: +12.50m, volume: 450_000);
+infy.ReceiveTick(newPrice: 1798m, change: +20.50m, volume: 510_000);
+infy.ReceiveTick(newPrice: 1803m, change: +25.50m, volume: 620_000); // ← alert fires here
+
+// [Zerodha]   Alert set: notify when INFY goes above ₹1800
+// [Chart]     INFY: ₹1790.00  ▲ ₹12.50  (0.70%)  Vol: 450,000
+// [Portfolio] INFY × 50 = ₹89500  P&L: +₹2000
+// [Chart]     INFY: ₹1798.00  ▲ ₹20.50  (1.15%)  Vol: 510,000
+// [Portfolio] INFY × 50 = ₹89900  P&L: +₹2400
+// [Chart]     INFY: ₹1803.00  ▲ ₹25.50  (1.43%)  Vol: 620,000
+// [Portfolio] INFY × 50 = ₹90150  P&L: +₹2650
+// [Alert]     🔔 INFY hit ₹1803.00 — your target was reached!
+```
+
+---
+
+### 9.4 Netflix — Streaming & Continue Watching
+
+**The real problem Netflix solves:**
+As you watch content, multiple systems need your progress: the "Continue Watching" row saves your exact timestamp, the recommendation engine updates based on what you watched and skipped, and the download manager clears local copies once you finish. Each subscribes independently to playback events.
+
+```csharp
+// ─────────────────────────────────────────────────────
+// ContentPlayer.cs — the publisher
+// ─────────────────────────────────────────────────────
+public class ContentPlayer
+{
+    public string ContentId    { get; private set; }
+    public int    TotalMinutes { get; private set; }
+    private int   _currentMinute = 0;
+    private bool  _isPlaying     = false;
+
+    public event Action<string, string> OnPlaybackStarted;  // (contentId, title)
+    public event Action<string, int>    OnProgressUpdated;  // (contentId, currentMinute)
+    public event Action<string, int>    OnPlaybackStopped;  // (contentId, stoppedAtMinute)
+    public event Action<string>         OnContentCompleted; // (contentId)
+    public event Action<string, int>    OnChapterSkipped;   // (contentId, skippedToMinute)
+
+    public void Play(string contentId, string title, int totalMinutes)
+    {
+        ContentId     = contentId;
+        TotalMinutes  = totalMinutes;
+        _isPlaying    = true;
+        OnPlaybackStarted?.Invoke(contentId, title);
+    }
+
+    public void TickMinute()
+    {
+        if (!_isPlaying) return;
+        _currentMinute++;
+        OnProgressUpdated?.Invoke(ContentId, _currentMinute);
+
+        if (_currentMinute >= TotalMinutes)
+        {
+            _isPlaying = false;
+            OnContentCompleted?.Invoke(ContentId);
+        }
+    }
+
+    public void Stop()
+    {
+        _isPlaying = false;
+        OnPlaybackStopped?.Invoke(ContentId, _currentMinute);
+    }
+
+    public void SkipTo(int minute)
+    {
+        _currentMinute = minute;
+        OnChapterSkipped?.Invoke(ContentId, minute);
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 1 — Continue Watching
+// ─────────────────────────────────────────────────────
+public class ContinueWatchingService
+{
+    private Dictionary<string, int> _watchProgress = new(); // contentId → minute saved
+
+    public ContinueWatchingService(ContentPlayer player)
+    {
+        player.OnProgressUpdated += SaveProgress;
+        player.OnContentCompleted += RemoveFromList;
+    }
+
+    private void SaveProgress(string contentId, int minute)
+    {
+        _watchProgress[contentId] = minute;
+        if (minute % 5 == 0) // persist to server every 5 minutes to reduce writes
+            Console.WriteLine($"[Continue Watching] Saved {contentId} at minute {minute}");
+    }
+
+    private void RemoveFromList(string contentId)
+    {
+        _watchProgress.Remove(contentId);
+        Console.WriteLine($"[Continue Watching] Removed {contentId} — fully watched!");
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 2 — Recommendation Engine
+// ─────────────────────────────────────────────────────
+public class RecommendationEngine
+{
+    public RecommendationEngine(ContentPlayer player)
+    {
+        player.OnContentCompleted += OnFinished;
+        player.OnChapterSkipped   += OnSkipped;
+    }
+
+    private void OnFinished(string contentId)
+    {
+        Console.WriteLine($"[Recommendations] Finished {contentId} — strong positive signal, updating model");
+    }
+
+    private void OnSkipped(string contentId, int skippedToMinute)
+    {
+        Console.WriteLine($"[Recommendations] Skip detected in {contentId} → minute {skippedToMinute} (possible intro skip or disengagement)");
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Usage
+// ─────────────────────────────────────────────────────
+ContentPlayer           player = new ContentPlayer();
+ContinueWatchingService resume = new ContinueWatchingService(player);
+RecommendationEngine    recs   = new RecommendationEngine(player);
+
+player.Play("DARK-S01-E01", "Dark — Season 1 Episode 1", totalMinutes: 10);
+player.SkipTo(2); // user skipped intro
+for (int i = 0; i < 10; i++) player.TickMinute(); // watch to end
+
+// [Recommendations] Skip detected in DARK-S01-E01 → minute 2
+// [Continue Watching] Saved DARK-S01-E01 at minute 5
+// [Continue Watching] Saved DARK-S01-E01 at minute 10
+// [Continue Watching] Removed DARK-S01-E01 — fully watched!
+// [Recommendations] Finished DARK-S01-E01 — strong positive signal, updating model
+```
+
+---
+
+### 9.5 Ola — Ride Booking System
+
+**The real problem Ola solves:**
+A ride goes through many states — driver assigned, en route, ride started, ride ended, payment processed. Multiple systems track each transition: the customer's app shows the driver moving in real time, the safety team monitors the ride, the pricing engine calculates the fare, and the payment system charges the customer.
+
+```csharp
+// ─────────────────────────────────────────────────────
+// Shared data
+// ─────────────────────────────────────────────────────
+public class Driver
+{
+    public string Name   { get; set; }
+    public string CarNo  { get; set; }
+    public double Rating { get; set; }
+}
+
+// ─────────────────────────────────────────────────────
+// RideSession.cs — the publisher
+// ─────────────────────────────────────────────────────
+public class RideSession
+{
+    public string RideId { get; }
+
+    public event Action<Driver>   OnDriverAssigned;          // driver details
+    public event Action<Location> OnDriverLocationUpdated;   // live GPS location
+    public event Action           OnRideStarted;             // meter starts running
+    public event Action<int>      OnRideEnded;               // (distanceKm)
+    public event Action<decimal>  OnFareCalculated;          // (finalFare in ₹)
+    public event Action<string>   OnRideCancelled;           // (cancellation reason)
+
+    public RideSession(string rideId) => RideId = rideId;
+
+    public void AssignDriver(Driver driver)
+    {
+        Console.WriteLine($"[Ride] Driver assigned: {driver.Name} | {driver.CarNo}");
+        OnDriverAssigned?.Invoke(driver);
+    }
+
+    public void UpdateDriverLocation(Location loc)
+    {
+        OnDriverLocationUpdated?.Invoke(loc);
+    }
+
+    public void StartRide()
+    {
+        Console.WriteLine("[Ride] Ride started — meter running");
+        OnRideStarted?.Invoke();
+    }
+
+    public void EndRide(int distanceKm)
+    {
+        decimal fare = 40 + (distanceKm * 12m); // ₹40 base + ₹12 per km
+        Console.WriteLine($"[Ride] Ended — {distanceKm} km, fare ₹{fare}");
+        OnRideEnded?.Invoke(distanceKm);
+        OnFareCalculated?.Invoke(fare); // fires AFTER OnRideEnded
+    }
+
+    public void CancelRide(string reason)
+    {
+        Console.WriteLine($"[Ride] Cancelled: {reason}");
+        OnRideCancelled?.Invoke(reason);
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 1 — Customer App
+// ─────────────────────────────────────────────────────
+public class CustomerApp
+{
+    public CustomerApp(RideSession ride)
+    {
+        ride.OnDriverAssigned        += ShowDriverCard;
+        ride.OnDriverLocationUpdated += MoveMapPin;
+        ride.OnFareCalculated        += ShowFareBreakdown;
+        ride.OnRideCancelled         += ShowCancellationMessage;
+    }
+
+    private void ShowDriverCard(Driver d)
+    {
+        Console.WriteLine($"[Customer App] Your driver: {d.Name}  ⭐ {d.Rating}  |  {d.CarNo}");
+    }
+
+    private void MoveMapPin(Location loc)
+    {
+        Console.WriteLine($"[Customer App] Driver is at ({loc.Latitude:F4}, {loc.Longitude:F4})");
+    }
+
+    private void ShowFareBreakdown(decimal fare)
+    {
+        Console.WriteLine($"[Customer App] Total fare: ₹{fare}  |  Paid via UPI ✓");
+    }
+
+    private void ShowCancellationMessage(string reason)
+    {
+        Console.WriteLine($"[Customer App] Ride cancelled: {reason}. No charge applied.");
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Subscriber 2 — Payment Service
+// ─────────────────────────────────────────────────────
+public class PaymentService
+{
+    public PaymentService(RideSession ride)
+    {
+        ride.OnFareCalculated += ChargeCustomer;
+        ride.OnRideCancelled  += HandleCancellation;
+    }
+
+    private void ChargeCustomer(decimal amount)
+    {
+        Console.WriteLine($"[Payment] Charged ₹{amount} to saved payment method");
+    }
+
+    private void HandleCancellation(string reason)
+    {
+        Console.WriteLine("[Payment] No charge — ride was cancelled");
+    }
+}
+
+// ─────────────────────────────────────────────────────
+// Usage
+// ─────────────────────────────────────────────────────
+RideSession    ride    = new RideSession("OLA-BLR-20240312-7731");
+CustomerApp    app     = new CustomerApp(ride);
+PaymentService payment = new PaymentService(ride);
+
+ride.AssignDriver(new Driver { Name = "Ravi Kumar", CarNo = "KA-03-AB-1234", Rating = 4.8 });
+ride.UpdateDriverLocation(new Location { Latitude = 12.9352, Longitude = 77.6245 });
+ride.StartRide();
+ride.EndRide(distanceKm: 8);
+
+// [Ride]         Driver assigned: Ravi Kumar | KA-03-AB-1234
+// [Customer App] Your driver: Ravi Kumar  ⭐ 4.8  |  KA-03-AB-1234
+// [Customer App] Driver is at (12.9352, 77.6245)
+// [Ride]         Ride started — meter running
+// [Ride]         Ended — 8 km, fare ₹136
+// [Customer App] Total fare: ₹136  |  Paid via UPI ✓
+// [Payment]      Charged ₹136 to saved payment method
+```
+
+---
+
+### The pattern across every company
+
+Every example above follows the exact same structure. Look at the comparison:
+
+| Company | Publisher | What it broadcasts | Who subscribes |
+|---|---|---|---|
+| YouTube | `VideoPlayer` | Playback events | Analytics, Ads, Autoplay, Notifications |
+| Swiggy | `Order` | Status changes | Customer UI, Push Notifications, Delivery Partner |
+| Zerodha | `StockTicker` | Price ticks | Chart, Portfolio, Price Alerts |
+| Netflix | `ContentPlayer` | Watch progress | Continue Watching, Recommendations |
+| Ola | `RideSession` | Ride lifecycle | Customer App, Payment |
+
+In every case:
+- The publisher fires events and **has zero knowledge of who is listening**
+- Subscribers are added or removed without touching the publisher at all
+- Each subscriber reacts independently to the same event
+- Adding a new feature (a new subscriber) requires **zero changes to the publisher**
+
+This is why delegates and events are used everywhere in production systems — they keep code decoupled, testable, and easy to extend.
+
+---
+
+## 10. Common Patterns & Pitfalls
 
 ### Pattern — Delegates as callbacks
 
@@ -1420,7 +2231,7 @@ for (int i = 0; i < 3; i++)
 
 ---
 
-## 10. Practice Exercises
+## 11. Practice Exercises
 
 Work through these to solidify your understanding. Start from the top and move down.
 
@@ -1484,7 +2295,7 @@ Write two subscribers: `ScoreUI` (updates a text display) and `AchievementTracke
 
 ---
 
-## 11. Quick Reference Cheat Sheet
+## 12. Quick Reference Cheat Sheet
 
 ### Declare a delegate type
 
